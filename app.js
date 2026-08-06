@@ -1,18 +1,67 @@
 const ACTS = ["act1", "act2", "act3"];
-const PARTS = [
-  { label: "Soloists", group: "non singing parts" },
-  { label: "Trumpet", group: "non singing parts" },
-  { label: "Clarinet", group: "non singing parts" },
-  { label: "Saxophone", group: "non singing parts" },
-  { label: "Percussion", group: "non singing parts" },
-  { label: "Piano", group: "non singing parts" },
-  { label: "Soprano", group: "singing parts" },
-  { label: "Tenor", group: "singing parts" },
-  { label: "Alto", group: "singing parts" },
-  { label: "Bass", group: "singing parts" },
-];
+const ACT_DETAILS = {
+  act1: {
+    label: "Act 1 - Music Man",
+    referencePart: "Piano",
+    songShortcuts: [
+      { label: "Goodnight, My Someone", time: 0 },
+      { label: "Seventy Six Trombones", time: 107 },
+      { label: "It's You", time: 154 },
+      { label: "Lida Rose", time: 168 },
+      { label: "My White Night", time: 245 },
+      { label: "Till There Was You", time: 284 },
+      { label: "Iowa Stubborn", time: 344 },
+      { label: "The Wells Fargo Wagon", time: 350 },
+      { label: "Pick-a-little Talk-a-little", time: 390 },
+    ],
+    parts: [
+      { label: "Soloists", group: "non singing parts", fileName: "Act1_Soloists.mp3" },
+      { label: "Winds", group: "non singing parts", fileName: "Act1_Winds.mp3" },
+      { label: "Percussion", group: "non singing parts", fileName: "Act1_Percussion.mp3" },
+      { label: "Piano", group: "non singing parts", fileName: "Act1_Piano.mp3" },
+      { label: "Soprano", group: "singing parts", fileName: "Solo_Act1Soprano.mp3" },
+      { label: "Alto", group: "singing parts", fileName: "Solo_Act1Alto.mp3" },
+      { label: "Tenor", group: "singing parts", fileName: "Solo_Act1Tenor.mp3" },
+      { label: "Bass", group: "singing parts", fileName: "Solo_Act1Bass.mp3" },
+    ],
+  },
+  act2: {
+    label: "Act 2 - Spelling Bee",
+    parts: [
+      { label: "Soloists", group: "non singing parts" },
+      { label: "Trumpet", group: "non singing parts" },
+      { label: "Clarinet", group: "non singing parts" },
+      { label: "Saxophone", group: "non singing parts" },
+      { label: "Percussion", group: "non singing parts" },
+      { label: "Piano", group: "non singing parts" },
+      { label: "Soprano", group: "singing parts" },
+      { label: "Alto", group: "singing parts" },
+      { label: "Tenor", group: "singing parts" },
+      { label: "Bass", group: "singing parts" },
+    ],
+  },
+  act3: {
+    label: "Act 3 - Carousel",
+    parts: [
+      { label: "Soloists", group: "non singing parts" },
+      { label: "Trumpet", group: "non singing parts" },
+      { label: "Clarinet", group: "non singing parts" },
+      { label: "Saxophone", group: "non singing parts" },
+      { label: "Percussion", group: "non singing parts" },
+      { label: "Piano", group: "non singing parts" },
+      { label: "Soprano", group: "singing parts" },
+      { label: "Alto", group: "singing parts" },
+      { label: "Tenor", group: "singing parts" },
+      { label: "Bass", group: "singing parts" },
+    ],
+  },
+};
+const PARTS = ACT_DETAILS.act2.parts;
 
 const FILE_EXTENSIONS = ["mp3", "wav", "ogg", "m4a"];
+const REST_INDICATOR_DELAY_MS = 200;
+const PIANO_DEFAULT_VOLUME = 70;
+const PIANO_GAIN_BOOST = 1.2;
 const pathExistsCache = new Map();
 const panelStates = new Map();
 
@@ -23,7 +72,6 @@ const partRowTemplate = document.getElementById("part-row-template");
 let activeAct = ACTS[0];
 let audioContext;
 let animationFrameId;
-const analysisNodes = new WeakMap();
 
 function normalizeNameOptions(name) {
   const trimmed = name.trim();
@@ -31,7 +79,45 @@ function normalizeNameOptions(name) {
   const titleCase = trimmed
     .toLowerCase()
     .replace(/(^|\s)\S/g, (char) => char.toUpperCase());
-  return [...new Set([trimmed, lower, titleCase, trimmed.replace(/\s+/g, "_"), trimmed.replace(/\s+/g, "-")])];
+  return [
+    ...new Set([
+      trimmed,
+      lower,
+      titleCase,
+      trimmed.replace(/\s+\(/g, "_("),
+      trimmed.replace(/\s+/g, "_"),
+      trimmed.replace(/\s+/g, "-"),
+    ]),
+  ];
+}
+
+function getActParts(act) {
+  return ACT_DETAILS[act]?.parts ?? PARTS;
+}
+
+function getSingingParts(act) {
+  return getActParts(act).filter((part) => part.group === "singing parts");
+}
+
+function getActLabel(act) {
+  return ACT_DETAILS[act]?.label ?? act;
+}
+
+function getReferencePartLabel(act) {
+  return ACT_DETAILS[act]?.referencePart ?? "Piano";
+}
+
+function getTrackGainBoost(partLabel) {
+  return partLabel === "Piano" ? PIANO_GAIN_BOOST : 1;
+}
+
+function getTrackGainValue(trackState) {
+  const volume = Number(trackState.volumeControl?.value ?? 0) / 100;
+  return volume * getTrackGainBoost(trackState.part.label);
+}
+
+function getSongShortcuts(act) {
+  return ACT_DETAILS[act]?.songShortcuts ?? [];
 }
 
 function buildTrackCandidates(act, part) {
@@ -39,6 +125,11 @@ function buildTrackCandidates(act, part) {
   const groupNames = normalizeNameOptions(part.group);
   const partNames = normalizeNameOptions(part.label);
   const candidates = [];
+
+  if (part.fileName) {
+    candidates.push(`music/${act}/${part.group}/${part.fileName}`);
+    return candidates;
+  }
 
   for (const actName of actNames) {
     for (const groupName of groupNames) {
@@ -78,29 +169,179 @@ async function resolveTrackPath(act, part) {
 
 function ensureAudioContext() {
   if (!audioContext) {
-    audioContext = new AudioContext();
+    const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
+    audioContext = new AudioContextConstructor();
   }
   if (audioContext.state === "suspended") {
     audioContext.resume().catch(() => {});
   }
 }
 
-function getAnalyserForAudio(audioElement) {
+function ensureTrackGraph(trackState) {
   if (!audioContext) {
     return null;
   }
 
-  if (analysisNodes.has(audioElement)) {
-    return analysisNodes.get(audioElement);
+  if (!trackState.gainNode) {
+    trackState.gainNode = audioContext.createGain();
+    trackState.gainNode.gain.value = trackState.gainValue ?? 1;
   }
 
-  const source = audioContext.createMediaElementSource(audioElement);
-  const analyser = audioContext.createAnalyser();
-  analyser.fftSize = 1024;
-  source.connect(analyser);
-  analyser.connect(audioContext.destination);
-  analysisNodes.set(audioElement, analyser);
-  return analyser;
+  if (!trackState.analyserNode) {
+    trackState.analyserNode = audioContext.createAnalyser();
+    trackState.analyserNode.fftSize = 1024;
+    trackState.gainNode.connect(trackState.analyserNode);
+    trackState.analyserNode.connect(audioContext.destination);
+  }
+
+  return trackState.analyserNode;
+}
+
+function getAnalyserForAudio(trackState) {
+  return trackState?.analyserNode ?? null;
+}
+
+function getTrackCurrentTime(trackState, now = audioContext?.currentTime ?? 0) {
+  if (!trackState) {
+    return 0;
+  }
+
+  if (trackState.isPlaying && Number.isFinite(trackState.startedAt)) {
+    const elapsed = Math.max(0, now - trackState.startedAt);
+    const duration = Number.isFinite(trackState.buffer?.duration) ? trackState.buffer.duration : Number.POSITIVE_INFINITY;
+    return Math.min(duration, trackState.offset + elapsed);
+  }
+
+  return trackState.offset ?? 0;
+}
+
+function setTrackOffset(trackState, timeSeconds) {
+  const duration = Number.isFinite(trackState.buffer?.duration) ? trackState.buffer.duration : Number.POSITIVE_INFINITY;
+  trackState.offset = Math.max(0, Math.min(duration, timeSeconds));
+}
+
+function applyTrackGain(trackState) {
+  const gainValue = getTrackGainValue(trackState);
+  trackState.gainValue = gainValue;
+  if (trackState.gainNode) {
+    trackState.gainNode.gain.value = gainValue;
+  }
+}
+
+function stopTrackPlayback(trackState, preserveOffset = true) {
+  if (trackState.isPlaying) {
+    trackState.offset = getTrackCurrentTime(trackState);
+  }
+
+  if (trackState.sourceNode) {
+    try {
+      trackState.sourceNode.onended = null;
+      trackState.sourceNode.stop();
+      trackState.sourceNode.disconnect();
+    } catch {
+      // Ignore source nodes that have already ended.
+    }
+  }
+
+  trackState.sourceNode = null;
+  trackState.startedAt = 0;
+  trackState.isPlaying = false;
+
+  if (!preserveOffset) {
+    trackState.offset = 0;
+  }
+}
+
+function startTrackPlayback(trackState, startTime) {
+  if (!audioContext || !trackState.buffer || !trackState.gainNode) {
+    return;
+  }
+
+  const sourceNode = audioContext.createBufferSource();
+  sourceNode.buffer = trackState.buffer;
+  sourceNode.connect(trackState.gainNode);
+
+  const playbackToken = (trackState.playbackToken ?? 0) + 1;
+  trackState.playbackToken = playbackToken;
+  trackState.sourceNode = sourceNode;
+  trackState.startedAt = startTime;
+  trackState.isPlaying = true;
+
+  const offset = Math.max(0, Math.min(trackState.offset ?? 0, trackState.buffer.duration));
+  sourceNode.onended = () => {
+    if (trackState.playbackToken !== playbackToken) {
+      return;
+    }
+
+    trackState.sourceNode = null;
+    trackState.startedAt = 0;
+    trackState.isPlaying = false;
+    trackState.offset = trackState.buffer?.duration ?? 0;
+  };
+
+  sourceNode.start(startTime, offset);
+}
+
+function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return "0:00";
+  }
+
+  const wholeSeconds = Math.floor(seconds);
+  const minutes = Math.floor(wholeSeconds / 60);
+  const remainder = wholeSeconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
+}
+
+function getReferenceRow(panelState) {
+  return panelState.rowMap.get(getReferencePartLabel(panelState.act)) ?? [...panelState.rowMap.values()][0] ?? null;
+}
+
+function waitForAudioMetadata(audio) {
+  if (audio.buffer) {
+    return Promise.resolve();
+  }
+
+  return audio.loadPromise ?? Promise.resolve();
+}
+
+function updateTimelineUI(panelState) {
+  const referenceRow = getReferenceRow(panelState);
+  if (!referenceRow) {
+    return;
+  }
+
+  const { audio } = referenceRow;
+  const { timelineSlider, timelineTime } = panelState;
+  const duration = Number.isFinite(audio.buffer?.duration) && audio.buffer.duration > 0 ? audio.buffer.duration : 0;
+  const currentTime = getTrackCurrentTime(audio);
+
+  if (duration > 0) {
+    timelineSlider.value = String(Math.min(100, Math.max(0, (currentTime / duration) * 100)));
+  } else {
+    timelineSlider.value = "0";
+  }
+
+  timelineTime.textContent = formatTime(currentTime);
+}
+
+async function seekPanel(panelState, timeSeconds) {
+  const targetTime = Math.max(0, timeSeconds);
+  await ensurePanelAudioSources(panelState);
+
+  const loadedRows = [...panelState.rowMap.values()].filter((row) => row.audio.buffer);
+  await Promise.all(loadedRows.map((row) => waitForAudioMetadata(row.audio)));
+
+  if (panelState.isPlaying) {
+    await restartPanelPlayback(panelState, targetTime);
+    return;
+  }
+
+  for (const row of loadedRows) {
+    setTrackOffset(row.audio, targetTime);
+  }
+
+  updateTimelineUI(panelState);
 }
 
 function updateSingIndicator() {
@@ -113,7 +354,7 @@ function updateSingIndicator() {
   const voiceRow = rowMap.get(voiceSelect.value);
 
   let isSinging = false;
-  if (voiceRow && !voiceRow.audio.paused && !voiceRow.audio.muted && voiceRow.audio.volume > 0) {
+  if (voiceRow && voiceRow.audio.isPlaying && voiceRow.audio.gainValue > 0) {
     const analyser = getAnalyserForAudio(voiceRow.audio);
     if (analyser) {
       const data = new Uint8Array(analyser.frequencyBinCount);
@@ -128,9 +369,30 @@ function updateSingIndicator() {
     }
   }
 
-  indicator.classList.toggle("sing", isSinging);
-  indicator.classList.toggle("rest", !isSinging);
-  indicator.textContent = isSinging ? "Your part- Sing now" : "Rests- don't sing";
+  if (isSinging) {
+    if (activeState.restIndicatorTimeoutId) {
+      clearTimeout(activeState.restIndicatorTimeoutId);
+      activeState.restIndicatorTimeoutId = null;
+    }
+    activeState.indicatorIsSinging = true;
+    indicator.classList.toggle("sing", true);
+    indicator.classList.toggle("rest", false);
+    indicator.textContent = "Your part- Sing now";
+  } else if (activeState.indicatorIsSinging && !activeState.restIndicatorTimeoutId) {
+    activeState.restIndicatorTimeoutId = window.setTimeout(() => {
+      activeState.restIndicatorTimeoutId = null;
+      activeState.indicatorIsSinging = false;
+      indicator.classList.toggle("sing", false);
+      indicator.classList.toggle("rest", true);
+      indicator.textContent = "Rests- don't sing";
+    }, REST_INDICATOR_DELAY_MS);
+  } else if (!activeState.indicatorIsSinging) {
+    indicator.classList.toggle("sing", false);
+    indicator.classList.toggle("rest", true);
+    indicator.textContent = "Rests- don't sing";
+  }
+
+  updateTimelineUI(activeState);
 
   animationFrameId = requestAnimationFrame(updateSingIndicator);
 }
@@ -143,8 +405,13 @@ function stopIndicatorLoop() {
 }
 
 function pausePanelAudio(panelState) {
+  if (panelState.restIndicatorTimeoutId) {
+    clearTimeout(panelState.restIndicatorTimeoutId);
+    panelState.restIndicatorTimeoutId = null;
+  }
+  panelState.indicatorIsSinging = false;
   for (const row of panelState.rowMap.values()) {
-    row.audio.pause();
+    stopTrackPlayback(row.audio);
   }
   panelState.playButton.textContent = "Play";
   panelState.isPlaying = false;
@@ -158,41 +425,93 @@ function pauseAllPanelsExcept(allowedAct) {
   }
 }
 
+function syncVoiceVolumes(panelState) {
+  const selectedRow = panelState.rowMap.get(panelState.voiceSelect.value);
+  if (!selectedRow) {
+    return;
+  }
+
+  for (const [label, row] of panelState.rowMap.entries()) {
+    const isSelected = label === panelState.voiceSelect.value;
+    const isSingingPart = row.part.group === "singing parts";
+    let volume = 35;
+
+    if (label === "Piano") {
+      volume = PIANO_DEFAULT_VOLUME;
+    } else if (isSingingPart) {
+      volume = isSelected ? 100 : 0;
+    }
+
+    row.volume.value = String(volume);
+    row.audio.volumeControl = row.volume;
+    applyTrackGain(row.audio);
+  }
+}
+
 async function ensurePanelAudioSources(panelState) {
+  ensureAudioContext();
+
   const requests = [...panelState.rowMap.values()].map(async (row) => {
-    if (row.audio.src) {
+    if (row.audio.buffer) {
       return;
     }
+    if (row.audio.loadPromise) {
+      await row.audio.loadPromise;
+      return;
+    }
+
     const path = await resolveTrackPath(panelState.act, row.part);
     if (path) {
-      row.audio.src = path;
-      row.audio.load();
+      row.audio.path = path;
+      const loadPromise = fetch(path)
+        .then((response) => response.arrayBuffer())
+        .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
+        .then((buffer) => {
+          row.audio.buffer = buffer;
+          setTrackOffset(row.audio, row.audio.offset ?? 0);
+          return buffer;
+        });
+      row.audio.loadPromise = loadPromise.catch((error) => {
+        row.audio.loadPromise = null;
+        return null;
+      });
+      await row.audio.loadPromise;
     }
   });
 
   await Promise.all(requests);
 }
 
-async function playPanel(panelState) {
+async function restartPanelPlayback(panelState, targetTime) {
   ensureAudioContext();
-  pauseAllPanelsExcept(panelState.act);
   await ensurePanelAudioSources(panelState);
 
-  const playableRows = [...panelState.rowMap.values()].filter((row) => row.toggle.checked && row.audio.src);
+  const startTime = audioContext.currentTime + 0.1;
+  const requestedTime = Math.max(0, targetTime);
 
-  await Promise.all(
-    playableRows.map((row) =>
-      row.audio.play().catch(() => {
-        /* ignored to keep other tracks playable */
-      })
-    )
-  );
+  for (const row of panelState.rowMap.values()) {
+    stopTrackPlayback(row.audio);
+    if (!row.toggle.checked || !row.audio.buffer) {
+      continue;
+    }
+
+    setTrackOffset(row.audio, requestedTime);
+    ensureTrackGraph(row.audio);
+    startTrackPlayback(row.audio, startTime);
+  }
 
   panelState.playButton.textContent = "Pause";
   panelState.isPlaying = true;
 
   stopIndicatorLoop();
   updateSingIndicator();
+}
+
+async function playPanel(panelState) {
+  pauseAllPanelsExcept(panelState.act);
+  const referenceRow = getReferenceRow(panelState);
+  const currentTime = referenceRow ? getTrackCurrentTime(referenceRow.audio) : 0;
+  await restartPanelPlayback(panelState, currentTime);
 }
 
 function switchTab(nextAct) {
@@ -227,46 +546,87 @@ function createPanel(act) {
   const playButton = panelContainer.querySelector(".play-toggle");
   const partsList = panelContainer.querySelector(".parts-list");
   const indicator = panelContainer.querySelector(".sing-indicator");
+  const timelineSlider = panelContainer.querySelector(".timeline-slider");
+  const timelineTime = panelContainer.querySelector(".timeline-time");
+  const songLinks = panelContainer.querySelector(".song-links");
+  const songLinksSection = panelContainer.querySelector(".song-links-section");
 
   const rowMap = new Map();
 
-  for (const part of PARTS) {
+  voiceSelect.replaceChildren();
+  for (const part of getSingingParts(act)) {
+    const option = document.createElement("option");
+    option.value = part.label;
+    option.textContent = part.label;
+    voiceSelect.append(option);
+  }
+
+  for (const part of getActParts(act)) {
     const row = partRowTemplate.content.firstElementChild.cloneNode(true);
     const name = row.querySelector(".part-name");
     const toggle = row.querySelector(".part-toggle");
     const volume = row.querySelector(".part-volume");
-    const audio = new Audio();
-    audio.preload = "metadata";
+    const audio = {
+      part,
+      volumeControl: volume,
+      buffer: null,
+      loadPromise: null,
+      path: "",
+      offset: 0,
+      startedAt: 0,
+      sourceNode: null,
+      gainNode: null,
+      analyserNode: null,
+      playbackToken: 0,
+      isPlaying: false,
+      gainValue: 1,
+    };
 
     name.textContent = part.label;
     volume.setAttribute("aria-label", `${part.label} volume`);
     toggle.setAttribute("aria-label", `${part.label} toggle`);
 
     volume.addEventListener("input", () => {
-      audio.volume = Number(volume.value) / 100;
+      audio.volumeControl = volume;
+      applyTrackGain(audio);
     });
 
     toggle.addEventListener("change", async () => {
+      if (toggle.checked && !audio.buffer) {
+        await ensurePanelAudioSources(panelState);
+      }
+
       if (!panelState.isPlaying) {
+        updateTimelineUI(panelState);
         return;
       }
 
-      if (toggle.checked) {
-        if (!audio.src) {
-          const path = await resolveTrackPath(panelState.act, part);
-          if (path) {
-            audio.src = path;
-            audio.load();
-          }
-        }
-        audio.play().catch(() => {});
-      } else {
-        audio.pause();
-      }
+      const referenceRow = getReferenceRow(panelState);
+      const referenceTime = referenceRow ? getTrackCurrentTime(referenceRow.audio) : 0;
+      await restartPanelPlayback(panelState, referenceTime);
     });
 
     partsList.append(row);
     rowMap.set(part.label, { part, audio, toggle, volume });
+  }
+
+  songLinks.replaceChildren();
+  const songShortcuts = getSongShortcuts(act);
+  if (songShortcuts.length === 0) {
+    songLinksSection.hidden = true;
+  } else {
+    songLinksSection.hidden = false;
+    for (const shortcut of songShortcuts) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "song-link";
+      button.textContent = `${shortcut.label} - ${formatTime(shortcut.time)}`;
+      button.dataset.time = String(shortcut.time);
+      button.addEventListener("click", async () => {
+        await seekPanel(panelState, shortcut.time);
+      });
+      songLinks.append(button);
+    }
   }
 
   const panelState = {
@@ -274,15 +634,44 @@ function createPanel(act) {
     voiceSelect,
     playButton,
     indicator,
+    timelineSlider,
+    timelineTime,
     rowMap,
     isPlaying: false,
+    indicatorIsSinging: false,
+    restIndicatorTimeoutId: null,
   };
+
+  timelineSlider.addEventListener("input", async () => {
+    const referenceRow = getReferenceRow(panelState);
+    if (!referenceRow) {
+      return;
+    }
+
+    await ensurePanelAudioSources(panelState);
+    const duration = referenceRow.audio.buffer?.duration;
+    if (!Number.isFinite(duration) || duration <= 0) {
+      return;
+    }
+
+    const targetTime = (Number(timelineSlider.value) / 100) * duration;
+    if (panelState.isPlaying) {
+      await restartPanelPlayback(panelState, targetTime);
+      return;
+    }
+
+    for (const row of panelState.rowMap.values()) {
+      setTrackOffset(row.audio, targetTime);
+    }
+    timelineTime.textContent = formatTime(targetTime);
+  });
 
   voiceSelect.addEventListener("change", () => {
     const selectedRow = rowMap.get(voiceSelect.value);
     if (selectedRow && !selectedRow.toggle.checked) {
       selectedRow.toggle.checked = true;
     }
+    syncVoiceVolumes(panelState);
     updateSingIndicator();
   });
 
@@ -297,10 +686,16 @@ function createPanel(act) {
   });
 
   panelStates.set(act, panelState);
+
+  syncVoiceVolumes(panelState);
 }
 
 for (const act of ACTS) {
   createPanel(act);
+}
+
+for (const button of tabButtons) {
+  button.textContent = getActLabel(button.dataset.act);
 }
 
 for (const button of tabButtons) {

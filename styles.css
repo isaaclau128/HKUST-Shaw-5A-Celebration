@@ -52,6 +52,79 @@ body {
   padding: 12px;
 }
 
+.panel-content {
+  display: grid;
+  gap: 18px;
+}
+
+.sing-indicator {
+  margin-top: 0;
+  border-radius: 10px;
+  min-height: 100px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-weight: 800;
+  font-size: clamp(1rem, 4vw, 1.6rem);
+  color: #fff;
+  padding: 12px;
+}
+
+.timeline-section,
+.song-links-section {
+  border: 1px solid #e6ebf2;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 12px;
+  width: 100%;
+}
+
+.timeline-control {
+  display: grid;
+  gap: 8px;
+  font-weight: 700;
+  width: 100%;
+}
+
+.timeline-slider {
+  width: 100%;
+}
+
+.timeline-meta {
+  display: flex;
+  justify-content: flex-start;
+  margin-top: 8px;
+}
+
+.timeline-time {
+  font-size: 0.85rem;
+  color: #4b5563;
+  font-variant-numeric: tabular-nums;
+}
+
+.section-title {
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.song-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.song-link {
+  width: 100%;
+  border: 1px solid #c6cedb;
+  border-radius: 999px;
+  background: #fff;
+  color: #1f2937;
+  min-height: 38px;
+  padding: 0 14px;
+  font-weight: 600;
+}
+
 .panel-top-controls {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -119,19 +192,6 @@ body {
   width: 100%;
 }
 
-.sing-indicator {
-  margin-top: 16px;
-  border-radius: 10px;
-  min-height: 100px;
-  display: grid;
-  place-items: center;
-  text-align: center;
-  font-weight: 800;
-  font-size: clamp(1rem, 4vw, 1.6rem);
-  color: #fff;
-  padding: 12px;
-}
-
 .sing-indicator.rest {
   background: #f97316;
 }
@@ -143,6 +203,11 @@ body {
 @media (min-width: 768px) {
   .app {
     padding: 24px;
+  }
+
+  .timeline-section,
+  .song-links-section {
+    padding: 14px;
   }
 
   .part-row {

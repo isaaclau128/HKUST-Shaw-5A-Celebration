@@ -13,9 +13,9 @@
       </header>
 
       <nav class="tabs" role="tablist" aria-label="Practice acts">
-        <button class="tab-button active" role="tab" aria-selected="true" data-act="act1">Act 1</button>
-        <button class="tab-button" role="tab" aria-selected="false" data-act="act2">Act 2</button>
-        <button class="tab-button" role="tab" aria-selected="false" data-act="act3">Act 3</button>
+        <button class="tab-button active" role="tab" aria-selected="true" data-act="act1">Act 1 - Music Man</button>
+        <button class="tab-button" role="tab" aria-selected="false" data-act="act2">Act 2 - Spelling Bee</button>
+        <button class="tab-button" role="tab" aria-selected="false" data-act="act3">Act 3 - Carousel</button>
       </nav>
 
       <section class="tab-panel active" data-panel="act1"></section>
@@ -25,22 +25,32 @@
 
     <template id="panel-template">
       <div class="panel-content">
+        <div class="sing-indicator rest" aria-live="polite">Rests- don't sing</div>
+
+        <div class="timeline-section">
+          <label class="timeline-control">
+            <span>Timeline</span>
+            <input class="timeline-slider" type="range" min="0" max="100" value="0" aria-label="Adjust music timeline" />
+          </label>
+          <div class="timeline-meta">
+            <span class="timeline-time">0:00</span>
+          </div>
+        </div>
+
+        <section class="song-links-section" aria-label="Song shortcuts">
+          <div class="section-title">Songs</div>
+          <div class="song-links"></div>
+        </section>
+
         <div class="panel-top-controls">
           <label>
             <span>Your Voice</span>
-            <select class="voice-select" aria-label="Select your voice">
-              <option value="Soprano">Soprano</option>
-              <option value="Alto">Alto</option>
-              <option value="Tenor">Tenor</option>
-              <option value="Bass">Bass</option>
-            </select>
+            <select class="voice-select" aria-label="Select your voice"></select>
           </label>
           <button class="play-toggle" type="button">Play</button>
         </div>
 
         <div class="parts-list" aria-label="Parts mixer"></div>
-
-        <div class="sing-indicator rest" aria-live="polite">Rests- don't sing</div>
       </div>
     </template>
 
