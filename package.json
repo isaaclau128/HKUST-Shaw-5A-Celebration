@@ -1,0 +1,17 @@
+{
+  "name": "hkust-shaw-5a-celebration",
+  "version": "1.0.0",
+  "description": "Mobile-friendly tabbed choir practice mixer",
+  "main": "app.js",
+  "scripts": {
+    "start": "python3 -m http.server 4173",
+    "test": "echo \"No automated tests configured\""
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://localhost:26831/isaaclau128/HKUST-Shaw-5A-Celebration"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
