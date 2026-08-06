@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Shaw 5A Singing Practice</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <h1>Shaw 5A Singing Practice</h1>
+      </header>
+
+      <nav class="tabs" role="tablist" aria-label="Practice acts">
+        <button class="tab-button active" role="tab" aria-selected="true" data-act="act1">Act 1</button>
+        <button class="tab-button" role="tab" aria-selected="false" data-act="act2">Act 2</button>
+        <button class="tab-button" role="tab" aria-selected="false" data-act="act3">Act 3</button>
+      </nav>
+
+      <section class="tab-panel active" data-panel="act1"></section>
+      <section class="tab-panel" data-panel="act2" hidden></section>
+      <section class="tab-panel" data-panel="act3" hidden></section>
+    </main>
+
+    <template id="panel-template">
+      <div class="panel-content">
+        <div class="panel-top-controls">
+          <label>
+            <span>Your Voice</span>
+            <select class="voice-select" aria-label="Select your voice">
+              <option value="Soprano">Soprano</option>
+              <option value="Alto">Alto</option>
+              <option value="Tenor">Tenor</option>
+              <option value="Bass">Bass</option>
+            </select>
+          </label>
+          <button class="play-toggle" type="button">Play</button>
+        </div>
+
+        <div class="parts-list" aria-label="Parts mixer"></div>
+
+        <div class="sing-indicator rest" aria-live="polite">Rests- don't sing</div>
+      </div>
+    </template>
+
+    <template id="part-row-template">
+      <div class="part-row">
+        <label class="part-toggle-wrap">
+          <input class="part-toggle" type="checkbox" checked />
+          <span class="part-name"></span>
+        </label>
+        <label class="volume-wrap">
+          <span class="volume-label">Volume</span>
+          <input class="part-volume" type="range" min="0" max="100" value="100" />
+        </label>
+      </div>
+    </template>
+
+    <script src="app.js"></script>
+  </body>
+</html>

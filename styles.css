@@ -1,0 +1,152 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f6f7fb;
+  color: #1f2937;
+}
+
+.app {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+.app-header h1 {
+  margin: 0 0 12px;
+  font-size: 1.5rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.tab-button {
+  flex: 1;
+  border: 1px solid #d0d7e2;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px;
+  font-weight: 600;
+}
+
+.tab-button.active {
+  background: #2563eb;
+  border-color: #1e4ed8;
+  color: #fff;
+}
+
+.tab-panel {
+  border: 1px solid #e1e7f0;
+  border-radius: 10px;
+  background: #fff;
+  padding: 12px;
+}
+
+.panel-top-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.panel-top-controls label {
+  display: grid;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.voice-select,
+.play-toggle {
+  border-radius: 8px;
+  border: 1px solid #c6cedb;
+  min-height: 42px;
+  font-size: 1rem;
+}
+
+.voice-select {
+  padding: 8px;
+}
+
+.play-toggle {
+  background: #0f766e;
+  color: #fff;
+  font-weight: 700;
+  padding: 0 18px;
+}
+
+.parts-list {
+  margin-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.part-row {
+  border: 1px solid #e6ebf2;
+  border-radius: 8px;
+  padding: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.part-toggle-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.volume-wrap {
+  display: grid;
+  gap: 6px;
+}
+
+.volume-label {
+  font-size: 0.9rem;
+  color: #4b5563;
+}
+
+.part-volume {
+  width: 100%;
+}
+
+.sing-indicator {
+  margin-top: 16px;
+  border-radius: 10px;
+  min-height: 100px;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  font-weight: 800;
+  font-size: clamp(1rem, 4vw, 1.6rem);
+  color: #fff;
+  padding: 12px;
+}
+
+.sing-indicator.rest {
+  background: #f97316;
+}
+
+.sing-indicator.sing {
+  background: #16a34a;
+}
+
+@media (min-width: 768px) {
+  .app {
+    padding: 24px;
+  }
+
+  .part-row {
+    grid-template-columns: 1fr 1.3fr;
+    align-items: center;
+  }
+}
