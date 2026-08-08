@@ -1,3 +1,22 @@
+// Shaw 5A Singing Practice
+//
+// Two rounds of fixes are baked into this file:
+//
+// 1. "Cannot find audio files on mobile" — every real track used to be
+//    downloaded twice (once to check it existed, once to actually use it),
+//    and a single transient network error permanently marked a track as
+//    "missing" for the rest of the session with no way to retry. Mobile
+//    connections hit far more of those transient blips than a stable
+//    desktop connection, so what should have been a brief hiccup became a
+//    permanent "not found".
+//
+// 2. "No sound on iOS even when tracks are loaded" — iOS Safari can report
+//    an AudioContext as "running" after resume() while still withholding
+//    real audible output until a buffer source has actually been started
+//    once inside a user gesture. This app schedules real playback slightly
+//    after the gesture (once fetch/decode has wrapped up), which is late
+//    enough for iOS to stay silent even though nothing throws an error.
+
 const ACTS = ["act1", "act2", "act3"];
 const ACT_DETAILS = {
   act1: {
@@ -39,7 +58,7 @@ const ACT_DETAILS = {
       { label: "The I Love You Song", time: 264 },
       { label: "Second", time: 340 },
       { label: "Finale", time: 376 },
-      { label: "Goodbye", time: 428 }
+      { label: "Goodbye", time: 428 },
     ],
     parts: [
       { label: "Soloists", group: "non singing parts", fileName: "Act2_Soloists.mp3" },
@@ -82,6 +101,8 @@ const FILE_EXTENSIONS = ["mp3", "wav", "ogg", "m4a"];
 const REST_INDICATOR_DELAY_MS = 200;
 const PIANO_DEFAULT_VOLUME = 70;
 const PIANO_GAIN_BOOST = 1.2;
+const MAX_LOAD_ATTEMPTS = 3;
+const RETRY_BASE_DELAY_MS = 600;
 const pathExistsCache = new Map();
 const panelStates = new Map();
 
@@ -92,6 +113,49 @@ const partRowTemplate = document.getElementById("part-row-template");
 let activeAct = ACTS[0];
 let audioContext;
 let animationFrameId;
+let audioUnlockResolve = null;
+let audioUnlocked = false;
+let silentUnlockDone = false;
+
+const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+const audioUnlockPromise = new Promise((resolve) => {
+  audioUnlockResolve = resolve;
+});
+
+function delay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function createConcurrencyLimiter(maxConcurrent) {
+  let activeCount = 0;
+  const queue = [];
+
+  const runNext = () => {
+    while (activeCount < maxConcurrent && queue.length > 0) {
+      activeCount += 1;
+      const { task, resolve, reject } = queue.shift();
+      Promise.resolve()
+        .then(task)
+        .then(resolve, reject)
+        .finally(() => {
+          activeCount -= 1;
+          runNext();
+        });
+    }
+  };
+
+  return (task) =>
+    new Promise((resolve, reject) => {
+      queue.push({ task, resolve, reject });
+      runNext();
+    });
+}
+
+const fetchLimiter = createConcurrencyLimiter(isIOS ? 3 : 8);
+const decodeLimiter = createConcurrencyLimiter(isIOS ? 1 : 4);
 
 function normalizeNameOptions(name) {
   const trimmed = name.trim();
@@ -140,16 +204,15 @@ function getSongShortcuts(act) {
   return ACT_DETAILS[act]?.songShortcuts ?? [];
 }
 
+// Only used for parts that don't already have an explicit fileName (Act 3,
+// which isn't wired to real files yet). Parts with a fileName have one
+// deterministic path and skip this candidate matrix entirely — see
+// resolveTrackPath below.
 function buildTrackCandidates(act, part) {
   const actNames = normalizeNameOptions(act);
   const groupNames = normalizeNameOptions(part.group);
   const partNames = normalizeNameOptions(part.label);
   const candidates = [];
-
-  if (part.fileName) {
-    candidates.push(`music/${act}/${part.group}/${part.fileName}`);
-    return candidates;
-  }
 
   for (const actName of actNames) {
     for (const groupName of groupNames) {
@@ -164,42 +227,78 @@ function buildTrackCandidates(act, part) {
   return candidates;
 }
 
+// Returns "found", "not-found" (a genuine HTTP error — the file really
+// isn't there), or "error" (a network-level failure that tells us nothing
+// about whether the file exists — worth retrying, not worth trusting).
+async function checkPathStatus(path) {
+  try {
+    const response = await fetch(encodeURI(path), { method: "HEAD" });
+    return response.ok ? "found" : "not-found";
+  } catch {
+    return "error";
+  }
+}
+
 async function pathExists(path) {
   if (pathExistsCache.has(path)) {
     return pathExistsCache.get(path);
   }
 
-  const existsPromise = fetch(encodeURI(path), { method: "HEAD" })
-    .then((response) => response.ok)
-    .catch(() => false);
+  const statusPromise = checkPathStatus(path).then((status) => {
+    // Don't permanently cache a network error — it's transient by
+    // definition, so a later retry should genuinely hit the network again
+    // instead of replaying a stale failure.
+    if (status === "error") {
+      pathExistsCache.delete(path);
+    }
+    return status;
+  });
 
-  pathExistsCache.set(path, existsPromise);
-  return existsPromise;
+  pathExistsCache.set(path, statusPromise);
+  return statusPromise;
 }
 
 async function resolveTrackPath(act, part) {
-  // If a part explicitly provides a fileName, try that path directly using a GET
-  // (some static servers don't respond to HEAD or paths contain spaces).
+  // A part with an explicit fileName has exactly one place it can live, so
+  // there's nothing to probe for — just hand back the path and let
+  // fetchTrackArrayBuffer be the single source of truth on whether it's
+  // actually reachable. (Previously this did a full GET here just to check
+  // existence, then a second full GET later to actually use the file —
+  // downloading every real track twice on every page load.)
   if (part.fileName) {
-    const direct = `music/${act}/${part.group}/${part.fileName}`;
-    try {
-      const response = await fetch(encodeURI(direct));
-      if (response.ok) {
-        return direct;
-      }
-    } catch {
-      // fallthrough to candidate probing below
-    }
+    return { path: `music/${act}/${part.group}/${part.fileName}`, transient: false };
   }
 
   const candidates = buildTrackCandidates(act, part);
+  let sawTransientError = false;
+
   for (const candidate of candidates) {
-    if (await pathExists(candidate)) {
-      return candidate;
+    const status = await pathExists(candidate);
+    if (status === "found") {
+      return { path: candidate, transient: false };
+    }
+    if (status === "error") {
+      sawTransientError = true;
     }
   }
 
-  return "";
+  // If every candidate came back as a clean 404, this part's audio really
+  // isn't on the server. If any of them failed because of a network error,
+  // we don't actually know that yet — tell the caller so it can retry
+  // instead of giving up.
+  return { path: "", transient: sawTransientError };
+}
+
+async function playSilentUnlockBuffer(context) {
+  try {
+    const buffer = context.createBuffer(1, 1, context.sampleRate);
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(context.destination);
+    source.start(0);
+  } catch {
+    // Best-effort nudge only — if it fails for any reason we just skip it.
+  }
 }
 
 async function ensureAudioContext() {
@@ -207,15 +306,105 @@ async function ensureAudioContext() {
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
     audioContext = new AudioContextConstructor();
   }
-  if (audioContext.state === "suspended") {
+
+  return audioContext;
+}
+
+async function unlockAudioContext() {
+  const context = await ensureAudioContext();
+
+  if (context.state === "suspended" || context.state === "interrupted") {
     try {
-      await audioContext.resume();
+      await context.resume();
     } catch {
-      // Ignore browsers that refuse to resume without a trusted gesture.
+      return context;
     }
   }
 
-  return audioContext;
+  if (context.state === "running") {
+    if (isIOS && !silentUnlockDone) {
+      silentUnlockDone = true;
+      // iOS Safari can report the context as "running" right after resume()
+      // while still withholding real audible output until a buffer source
+      // has actually been started once inside a user gesture. This app's
+      // real tracks get scheduled slightly after the gesture (fetch/decode
+      // needs to finish first), which is late enough for iOS to stay silent
+      // with no error at all. Starting an inaudible one-sample buffer here,
+      // synchronously off the same unlock path, satisfies that requirement
+      // so the real playback later on is reliably audible.
+      await playSilentUnlockBuffer(context);
+    }
+    markAudioUnlocked();
+  }
+
+  return context;
+}
+
+function markAudioUnlocked() {
+  if (audioUnlocked) {
+    return;
+  }
+
+  audioUnlocked = true;
+  if (audioUnlockResolve) {
+    audioUnlockResolve();
+    audioUnlockResolve = null;
+  }
+}
+
+function setupAudioUnlock() {
+  const tryUnlock = () => {
+    void unlockAudioContext();
+  };
+
+  document.addEventListener("touchstart", tryUnlock, { passive: true });
+  document.addEventListener("touchend", tryUnlock, { passive: true });
+  document.addEventListener("click", tryUnlock);
+
+  // iOS suspends the AudioContext when Safari backgrounds the tab (app
+  // switch, screen lock, etc). Re-resume as soon as the page is visible
+  // again so playback doesn't silently stay suspended.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && audioContext && audioContext.state !== "running") {
+      tryUnlock();
+    }
+  });
+}
+
+async function fetchTrackArrayBuffer(path) {
+  return fetchLimiter(async () => {
+    let response;
+    try {
+      response = await fetch(encodeURI(path));
+    } catch (error) {
+      // A thrown fetch is a network-level failure (offline, connection
+      // dropped, request aborted, etc) — not proof the file is missing.
+      const wrapped = new Error(`Network error fetching ${path}: ${error?.message ?? error}`);
+      wrapped.transient = true;
+      throw wrapped;
+    }
+
+    if (!response.ok) {
+      // A clean HTTP response that isn't ok (404, etc) means the server
+      // genuinely doesn't have this file.
+      const wrapped = new Error(`Failed to fetch ${path}: ${response.status}`);
+      wrapped.transient = false;
+      throw wrapped;
+    }
+
+    return response.arrayBuffer();
+  });
+}
+
+async function decodeTrackArrayBuffer(arrayBuffer) {
+  if (!audioUnlocked) {
+    await audioUnlockPromise;
+  }
+
+  return decodeLimiter(async () => {
+    await unlockAudioContext();
+    return decodeAudioBuffer(arrayBuffer);
+  });
 }
 
 async function decodeAudioBuffer(arrayBuffer) {
@@ -373,6 +562,7 @@ function getPanelLoadStats(panelState) {
   const total = panelState.rowMap.size;
   let ready = 0;
   let missing = 0;
+  let downloaded = 0;
 
   for (const row of panelState.rowMap.values()) {
     if (row.audio.buffer) {
@@ -382,17 +572,23 @@ function getPanelLoadStats(panelState) {
 
     if (row.audio.missing) {
       missing += 1;
+      continue;
+    }
+
+    if (row.audio.arrayBuffer) {
+      downloaded += 1;
     }
   }
 
   const pending = Math.max(0, total - ready - missing);
-  return { total, ready, missing, pending };
+  return { total, ready, missing, pending, downloaded };
 }
 
 function updatePanelLoadUI(panelState) {
-  const { total, ready, missing, pending } = getPanelLoadStats(panelState);
+  const { total, ready, missing, pending, downloaded } = getPanelLoadStats(panelState);
   const resolved = ready + missing;
-  const progress = total > 0 ? Math.min(100, Math.max(0, (resolved / total) * 100)) : 100;
+  const fetched = ready + missing + downloaded;
+  const progress = total > 0 ? Math.min(100, Math.max(0, (fetched / total) * 100)) : 100;
 
   panelState.loadProgressFill.style.width = `${progress}%`;
 
@@ -400,8 +596,10 @@ function updatePanelLoadUI(panelState) {
   if (total === 0) {
     statusText = "No tracks";
   } else if (pending > 0) {
-    if (ready === 0) {
-      statusText = `Loading ${resolved}/${total} tracks`;
+    if (!audioUnlocked && downloaded > 0 && ready === 0) {
+      statusText = `${downloaded}/${total} downloaded — tap Play to finish loading`;
+    } else if (ready === 0) {
+      statusText = `Loading ${fetched}/${total} tracks`;
     } else {
       const elapsedMs = Number.isFinite(panelState.loadStartedAt) ? performance.now() - panelState.loadStartedAt : 0;
       const averageMsPerResolved = resolved > 0 ? elapsedMs / resolved : 0;
@@ -410,15 +608,16 @@ function updatePanelLoadUI(panelState) {
       statusText = `${ready}/${total} ready, ${pending} loading, ${estimate}`;
     }
   } else if (missing > 0 && ready === 0) {
-    statusText = `No audio files found for ${missing} tracks`;
+    statusText = `No audio files found for ${missing} tracks — tap to retry`;
   } else if (missing > 0) {
-    statusText = `${ready}/${total} tracks loaded, ${missing} missing`;
+    statusText = `${ready}/${total} tracks loaded, ${missing} missing — tap to retry`;
   } else {
     statusText = `Audio ready for ${total} tracks`;
   }
 
   panelState.loadStatusText.textContent = statusText;
   panelState.loadStatusLabel.textContent = pending > 0 ? "Audio loading" : "Audio ready";
+  panelState.loadStatus.style.cursor = missing > 0 && pending === 0 ? "pointer" : "";
 }
 
 function markPanelLoadStarted(panelState) {
@@ -594,52 +793,152 @@ function syncVoiceVolumes(panelState) {
   }
 }
 
+async function loadTrackAudio(row, panelState) {
+  const { audio } = row;
+
+  if (audio.buffer) {
+    audio.missing = false;
+    return;
+  }
+
+  if (audio.loadPromise) {
+    await audio.loadPromise;
+    return;
+  }
+
+  audio.loadPromise = performTrackLoad(audio, row, panelState);
+  await audio.loadPromise;
+}
+
+async function performTrackLoad(audio, row, panelState) {
+  for (let attempt = 1; attempt <= MAX_LOAD_ATTEMPTS; attempt += 1) {
+    try {
+      if (!audio.path) {
+        const resolution = await resolveTrackPath(panelState.act, row.part);
+        if (!resolution.path) {
+          if (resolution.transient && attempt < MAX_LOAD_ATTEMPTS) {
+            await delay(RETRY_BASE_DELAY_MS * attempt);
+            continue;
+          }
+          audio.missing = true;
+          audio.loadPromise = null;
+          updatePanelLoadUI(panelState);
+          return;
+        }
+        audio.path = resolution.path;
+      }
+
+      if (!audio.arrayBuffer) {
+        audio.arrayBuffer = await fetchTrackArrayBuffer(audio.path);
+        updatePanelLoadUI(panelState);
+      }
+
+      let buffer;
+      try {
+        buffer = await decodeTrackArrayBuffer(audio.arrayBuffer);
+      } catch (decodeError) {
+        // A decode failure on bytes we already have is deterministic —
+        // retrying won't change the outcome, so don't treat it as transient.
+        if (decodeError && typeof decodeError === "object") {
+          decodeError.transient = false;
+        }
+        throw decodeError;
+      }
+
+      audio.arrayBuffer = null;
+      audio.buffer = buffer;
+      audio.missing = false;
+      setTrackOffset(audio, audio.offset ?? 0);
+      audio.loadPromise = null;
+      updatePanelLoadUI(panelState);
+      return;
+    } catch (error) {
+      // A fetch failure while the audio context is still locked (iOS,
+      // before any user gesture) isn't a real problem — decode was
+      // intentionally deferred until unlock. Let the caller try again once
+      // the page has been interacted with, without marking it missing.
+      if (audio.arrayBuffer && !audioUnlocked) {
+        audio.loadPromise = null;
+        updatePanelLoadUI(panelState);
+        return;
+      }
+
+      const transient = error?.transient !== false;
+      if (transient && attempt < MAX_LOAD_ATTEMPTS) {
+        await delay(RETRY_BASE_DELAY_MS * attempt);
+        continue;
+      }
+
+      audio.loadPromise = null;
+      audio.missing = true;
+      updatePanelLoadUI(panelState);
+      return;
+    }
+  }
+}
+
+function retryMissingTracks(panelState) {
+  let resetAny = false;
+  for (const row of panelState.rowMap.values()) {
+    const { audio } = row;
+    if (audio.missing) {
+      audio.missing = false;
+      audio.path = "";
+      audio.arrayBuffer = null;
+      audio.loadPromise = null;
+      resetAny = true;
+    }
+  }
+
+  if (resetAny) {
+    void ensurePanelAudioSources(panelState);
+  }
+}
+
 async function ensurePanelAudioSources(panelState) {
-  await ensureAudioContext();
   markPanelLoadStarted(panelState);
 
-  const requests = [...panelState.rowMap.values()].map(async (row) => {
-    if (row.audio.buffer) {
-      row.audio.missing = false;
-      return;
-    }
-    if (row.audio.loadPromise) {
-      await row.audio.loadPromise;
-      return;
-    }
-
-    const path = await resolveTrackPath(panelState.act, row.part);
-    if (path) {
-      row.audio.path = path;
-      const loadPromise = fetch(path)
-        .then((response) => response.arrayBuffer())
-        .then((arrayBuffer) => decodeAudioBuffer(arrayBuffer))
-        .then((buffer) => {
-          row.audio.buffer = buffer;
-          row.audio.missing = false;
-          setTrackOffset(row.audio, row.audio.offset ?? 0);
-          updatePanelLoadUI(panelState);
-          return buffer;
-        });
-      row.audio.loadPromise = loadPromise.catch((error) => {
-        row.audio.loadPromise = null;
-        row.audio.missing = true;
-        updatePanelLoadUI(panelState);
-        return null;
-      });
-      await row.audio.loadPromise;
-    } else {
-      row.audio.missing = true;
-      updatePanelLoadUI(panelState);
-    }
-  });
-
+  const requests = [...panelState.rowMap.values()].map((row) => loadTrackAudio(row, panelState));
   await Promise.all(requests);
   markPanelLoadFinished(panelState);
 }
 
+function preloadAct(act) {
+  const panelState = panelStates.get(act);
+  return panelState ? ensurePanelAudioSources(panelState) : Promise.resolve();
+}
+
+function scheduleBackgroundPreload(task) {
+  if (typeof window.requestIdleCallback === "function") {
+    window.requestIdleCallback(() => void task(), { timeout: 4000 });
+  } else {
+    window.setTimeout(() => void task(), 1200);
+  }
+}
+
+let actPreloadStarted = false;
+
+function startActPreload() {
+  if (actPreloadStarted) {
+    return;
+  }
+  actPreloadStarted = true;
+
+  // Load whichever tab is on screen first, so the user isn't stuck waiting
+  // on Act 1 to finish before the act they're actually looking at starts
+  // fetching anything.
+  void preloadAct(activeAct);
+
+  for (const act of ACTS) {
+    if (act === activeAct) {
+      continue;
+    }
+    scheduleBackgroundPreload(() => preloadAct(act));
+  }
+}
+
 async function restartPanelPlayback(panelState, targetTime) {
-  await ensureAudioContext();
+  await unlockAudioContext();
   await ensurePanelAudioSources(panelState);
 
   const startTime = audioContext.currentTime + 0.1;
@@ -730,6 +1029,7 @@ function createPanel(act) {
       part,
       volumeControl: volume,
       buffer: null,
+      arrayBuffer: null,
       loadPromise: null,
       path: "",
       offset: 0,
@@ -844,11 +1144,19 @@ function createPanel(act) {
 
   playButton.addEventListener("click", async () => {
     if (!panelState.isPlaying) {
+      await unlockAudioContext();
       await playPanel(panelState);
     } else {
       pausePanelAudio(panelState);
       stopIndicatorLoop();
       updateSingIndicator();
+    }
+  });
+
+  loadStatus.addEventListener("click", () => {
+    const { missing, pending } = getPanelLoadStats(panelState);
+    if (missing > 0 && pending === 0) {
+      retryMissingTracks(panelState);
     }
   });
 
@@ -873,9 +1181,12 @@ for (const button of tabButtons) {
 }
 
 updateSingIndicator();
+setupAudioUnlock();
+
+if (!isIOS) {
+  markAudioUnlocked();
+}
 
 window.setTimeout(() => {
-  for (const panelState of panelStates.values()) {
-    void ensurePanelAudioSources(panelState);
-  }
+  void startActPreload();
 }, 0);
