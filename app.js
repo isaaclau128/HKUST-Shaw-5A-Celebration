@@ -27,6 +27,18 @@ const ACT_DETAILS = {
   },
   act2: {
     label: "Act 2 - Spelling Bee",
+    referencePart: "Piano",
+    songShortcuts: [
+      { label: "Goodnight, My Someone", time: 0 },
+      { label: "Seventy Six Trombones", time: 10 },
+      { label: "It's You", time: 15 },
+      { label: "Lida Rose", time: 16 },
+      { label: "My White Night", time: 25 },
+      { label: "Till There Was You", time: 28 },
+      { label: "Iowa Stubborn", time: 34 },
+      { label: "The Wells Fargo Wagon", time: 39 },
+      { label: "Pick-a-little Talk-a-little", time: 60 },
+    ],
     parts: [
       { label: "Soloists", group: "non singing parts", fileName: "Act2_Soloists.mp3" },
       { label: "Trumpet", group: "non singing parts", fileName: "Act2_Trumpet.mp3" },
@@ -149,7 +161,7 @@ async function pathExists(path) {
     return pathExistsCache.get(path);
   }
 
-  const existsPromise = fetch(path, { method: "HEAD" })
+  const existsPromise = fetch(encodeURI(path), { method: "HEAD" })
     .then((response) => response.ok)
     .catch(() => false);
 
@@ -158,12 +170,27 @@ async function pathExists(path) {
 }
 
 async function resolveTrackPath(act, part) {
+  // If a part explicitly provides a fileName, try that path directly using a GET
+  // (some static servers don't respond to HEAD or paths contain spaces).
+  if (part.fileName) {
+    const direct = `music/${act}/${part.group}/${part.fileName}`;
+    try {
+      const response = await fetch(encodeURI(direct));
+      if (response.ok) {
+        return direct;
+      }
+    } catch {
+      // fallthrough to candidate probing below
+    }
+  }
+
   const candidates = buildTrackCandidates(act, part);
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
       return candidate;
     }
   }
+
   return "";
 }
 
