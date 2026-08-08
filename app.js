@@ -29,15 +29,17 @@ const ACT_DETAILS = {
     label: "Act 2 - Spelling Bee",
     referencePart: "Piano",
     songShortcuts: [
-      { label: "Goodnight, My Someone", time: 0 },
-      { label: "Seventy Six Trombones", time: 10 },
-      { label: "It's You", time: 15 },
-      { label: "Lida Rose", time: 16 },
-      { label: "My White Night", time: 25 },
-      { label: "Till There Was You", time: 28 },
-      { label: "Iowa Stubborn", time: 34 },
-      { label: "The Wells Fargo Wagon", time: 39 },
-      { label: "Pick-a-little Talk-a-little", time: 60 },
+      { label: "Pandemonium", time: 0 },
+      { label: "The Rules", time: 38 },
+      { label: "Rona's Moment", time: 73 },
+      { label: "Magic Foot", time: 88 },
+      { label: "I Speak Six Languages", time: 148 },
+      { label: "I'm Not That Smart", time: 195 },
+      { label: "Woe Is Me", time: 225 },
+      { label: "The I Love You Song", time: 264 },
+      { label: "Second", time: 340 },
+      { label: "Finale", time: 376 },
+      { label: "Goodbye", time: 428 }
     ],
     parts: [
       { label: "Soloists", group: "non singing parts", fileName: "Act2_Soloists.mp3" },
@@ -54,6 +56,14 @@ const ACT_DETAILS = {
   },
   act3: {
     label: "Act 3 - Carousel",
+    referencePart: "Piano",
+    songShortcuts: [
+      { label: "TEMP", time: 0 },
+      { label: "TEMP", time: 30 },
+      { label: "TEMP", time: 60 },
+      { label: "TEMP", time: 90 },
+      { label: "TEMP", time: 120 },
+    ],
     parts: [
       { label: "Soloists", group: "non singing parts" },
       { label: "Trumpet", group: "non singing parts" },
