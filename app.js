@@ -62,12 +62,12 @@ const ACT_DETAILS = {
     ],
     parts: [
       { label: "Soloists", group: "non singing parts", fileName: "Act2_Soloists.mp3" },
-      { label: "Winds", group: "non singing parts", fileName: "Act2_Winds.mp3" },
+      { label: "Trumpet", group: "non singing parts", fileName: "Act2_Trumpet.mp3" },
       { label: "Percussion", group: "non singing parts", fileName: "Act2_Percussion.mp3" },
       { label: "Piano", group: "non singing parts", fileName: "Act2_Piano.mp3" },
       { label: "Soprano", group: "singing parts", fileName: "Solo_Act2Soprano.mp3" },
       { label: "Alto", group: "singing parts", fileName: "Solo_Act2Alto.mp3" },
-      { label: "Tenor", group: "singing parts", fileName: "Solo_Act2_Tenor.mp3" },
+      { label: "Tenor", group: "singing parts", fileName: "Solo_Act2Tenor.mp3" },
       { label: "Bass", group: "singing parts", fileName: "Solo_Act2Bass.mp3" },
     ],
   },
@@ -103,6 +103,7 @@ const PIANO_DEFAULT_VOLUME = 70;
 const PIANO_GAIN_BOOST = 1.2;
 const MAX_LOAD_ATTEMPTS = 3;
 const RETRY_BASE_DELAY_MS = 600;
+const AUDIO_UNLOCK_TIMEOUT_MS = 1500;
 const pathExistsCache = new Map();
 const panelStates = new Map();
 
@@ -322,13 +323,12 @@ function resumeAudioContextSync() {
     context.resume().catch(() => {});
   }
 
-  if (isIOS && !silentUnlockDone) {
-    silentUnlockDone = true;
-    // iOS Safari can report the context as "running" right after resume()
-    // while still withholding real audible output until a buffer source
-    // has actually been started once inside a user gesture. Starting an
-    // inaudible one-sample buffer synchronously inside the same gesture
-    // satisfies that requirement so real playback later is reliably audible.
+  if (!audioUnlocked) {
+    // iOS Safari (and some other mobile browsers) can report the context as
+    // "running" while still withholding audible output until a buffer source
+    // has actually been started inside a user gesture. Always play a silent
+    // one-sample buffer synchronously during the gesture until we're certain
+    // the context is truly unlocked.
     playSilentUnlockBuffer(context);
   }
 
@@ -337,6 +337,20 @@ function resumeAudioContextSync() {
   }
 
   return context;
+}
+
+function unlockWithTimeout() {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => {
+      markAudioUnlocked();
+      resolve();
+    }, AUDIO_UNLOCK_TIMEOUT_MS);
+
+    audioUnlockPromise.then(() => {
+      window.clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 async function unlockAudioContext() {
@@ -354,8 +368,8 @@ async function unlockAudioContext() {
     }
   }
 
-  if (audioContext && audioContext.state !== "running") {
-    await audioUnlockPromise;
+  if (!audioUnlocked) {
+    await unlockWithTimeout();
   }
 
   return context;
@@ -384,7 +398,9 @@ function setupAudioUnlock() {
   // directly within the gesture, not after an async boundary.
   document.addEventListener("touchstart", tryUnlock, { passive: true, capture: true });
   document.addEventListener("touchend", tryUnlock, { passive: true, capture: true });
+  document.addEventListener("touchmove", tryUnlock, { passive: true, capture: true });
   document.addEventListener("pointerdown", tryUnlock, { passive: true, capture: true });
+  document.addEventListener("pointerup", tryUnlock, { passive: true, capture: true });
   document.addEventListener("click", tryUnlock, { capture: true });
 
   // iOS suspends the AudioContext when Safari backgrounds the tab (app
@@ -424,7 +440,13 @@ async function fetchTrackArrayBuffer(path) {
 
 async function decodeTrackArrayBuffer(arrayBuffer) {
   if (!audioUnlocked) {
-    await audioUnlockPromise;
+    // Some browsers never fire the statechange event even though playback
+    // works. Cap the wait so the UI doesn't hang forever.
+    await Promise.race([
+      audioUnlockPromise,
+      new Promise((resolve) => window.setTimeout(resolve, AUDIO_UNLOCK_TIMEOUT_MS)),
+    ]);
+    markAudioUnlocked();
   }
 
   return decodeLimiter(async () => {
