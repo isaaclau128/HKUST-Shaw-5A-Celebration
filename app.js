@@ -43,9 +43,7 @@ const ACT_DETAILS = {
     ],
     parts: [
       { label: "Soloists", group: "non singing parts", fileName: "Act2_Soloists.mp3" },
-      { label: "Trumpet", group: "non singing parts", fileName: "Act2_Trumpet.mp3" },
-      { label: "Clarinet", group: "non singing parts", fileName: "Act2_Clarinet.mp3" },
-      { label: "Saxophone", group: "non singing parts", fileName: "Act2_Saxophone.mp3" },
+      { label: "Winds", group: "non singing parts", fileName: "Act2_Winds.mp3" },
       { label: "Percussion", group: "non singing parts", fileName: "Act2_Percussion.mp3" },
       { label: "Piano", group: "non singing parts", fileName: "Act2_Piano.mp3" },
       { label: "Soprano", group: "singing parts", fileName: "Solo_Act2Soprano.mp3" },
