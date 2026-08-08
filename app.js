@@ -92,6 +92,44 @@ const partRowTemplate = document.getElementById("part-row-template");
 let activeAct = ACTS[0];
 let audioContext;
 let animationFrameId;
+let audioUnlockResolve = null;
+let audioUnlocked = false;
+
+const isIOS =
+  /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+
+const audioUnlockPromise = new Promise((resolve) => {
+  audioUnlockResolve = resolve;
+});
+
+function createConcurrencyLimiter(maxConcurrent) {
+  let activeCount = 0;
+  const queue = [];
+
+  const runNext = () => {
+    while (activeCount < maxConcurrent && queue.length > 0) {
+      activeCount += 1;
+      const { task, resolve, reject } = queue.shift();
+      Promise.resolve()
+        .then(task)
+        .then(resolve, reject)
+        .finally(() => {
+          activeCount -= 1;
+          runNext();
+        });
+    }
+  };
+
+  return (task) =>
+    new Promise((resolve, reject) => {
+      queue.push({ task, resolve, reject });
+      runNext();
+    });
+}
+
+const fetchLimiter = createConcurrencyLimiter(isIOS ? 3 : 8);
+const decodeLimiter = createConcurrencyLimiter(isIOS ? 1 : 4);
 
 function normalizeNameOptions(name) {
   const trimmed = name.trim();
@@ -207,15 +245,74 @@ async function ensureAudioContext() {
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
     audioContext = new AudioContextConstructor();
   }
-  if (audioContext.state === "suspended") {
+
+  return audioContext;
+}
+
+async function unlockAudioContext() {
+  const context = await ensureAudioContext();
+  if (context.state === "running") {
+    markAudioUnlocked();
+    return context;
+  }
+
+  if (context.state === "suspended" || context.state === "interrupted") {
     try {
-      await audioContext.resume();
+      await context.resume();
     } catch {
-      // Ignore browsers that refuse to resume without a trusted gesture.
+      return context;
     }
   }
 
-  return audioContext;
+  if (context.state === "running") {
+    markAudioUnlocked();
+  }
+
+  return context;
+}
+
+function markAudioUnlocked() {
+  if (audioUnlocked) {
+    return;
+  }
+
+  audioUnlocked = true;
+  if (audioUnlockResolve) {
+    audioUnlockResolve();
+    audioUnlockResolve = null;
+  }
+}
+
+function setupAudioUnlock() {
+  const tryUnlock = () => {
+    void unlockAudioContext();
+  };
+
+  document.addEventListener("touchstart", tryUnlock, { passive: true });
+  document.addEventListener("touchend", tryUnlock, { passive: true });
+  document.addEventListener("click", tryUnlock);
+}
+
+async function fetchTrackArrayBuffer(path) {
+  return fetchLimiter(async () => {
+    const response = await fetch(encodeURI(path));
+    if (!response.ok) {
+      throw new Error(`Failed to fetch ${path}: ${response.status}`);
+    }
+
+    return response.arrayBuffer();
+  });
+}
+
+async function decodeTrackArrayBuffer(arrayBuffer) {
+  if (!audioUnlocked) {
+    await audioUnlockPromise;
+  }
+
+  return decodeLimiter(async () => {
+    await unlockAudioContext();
+    return decodeAudioBuffer(arrayBuffer);
+  });
 }
 
 async function decodeAudioBuffer(arrayBuffer) {
@@ -373,6 +470,7 @@ function getPanelLoadStats(panelState) {
   const total = panelState.rowMap.size;
   let ready = 0;
   let missing = 0;
+  let downloaded = 0;
 
   for (const row of panelState.rowMap.values()) {
     if (row.audio.buffer) {
@@ -382,17 +480,23 @@ function getPanelLoadStats(panelState) {
 
     if (row.audio.missing) {
       missing += 1;
+      continue;
+    }
+
+    if (row.audio.arrayBuffer) {
+      downloaded += 1;
     }
   }
 
   const pending = Math.max(0, total - ready - missing);
-  return { total, ready, missing, pending };
+  return { total, ready, missing, pending, downloaded };
 }
 
 function updatePanelLoadUI(panelState) {
-  const { total, ready, missing, pending } = getPanelLoadStats(panelState);
+  const { total, ready, missing, pending, downloaded } = getPanelLoadStats(panelState);
   const resolved = ready + missing;
-  const progress = total > 0 ? Math.min(100, Math.max(0, (resolved / total) * 100)) : 100;
+  const fetched = ready + missing + downloaded;
+  const progress = total > 0 ? Math.min(100, Math.max(0, (fetched / total) * 100)) : 100;
 
   panelState.loadProgressFill.style.width = `${progress}%`;
 
@@ -400,8 +504,10 @@ function updatePanelLoadUI(panelState) {
   if (total === 0) {
     statusText = "No tracks";
   } else if (pending > 0) {
-    if (ready === 0) {
-      statusText = `Loading ${resolved}/${total} tracks`;
+    if (!audioUnlocked && downloaded > 0 && ready === 0) {
+      statusText = `${downloaded}/${total} downloaded — tap Play to finish loading`;
+    } else if (ready === 0) {
+      statusText = `Loading ${fetched}/${total} tracks`;
     } else {
       const elapsedMs = Number.isFinite(panelState.loadStartedAt) ? performance.now() - panelState.loadStartedAt : 0;
       const averageMsPerResolved = resolved > 0 ? elapsedMs / resolved : 0;
@@ -594,52 +700,94 @@ function syncVoiceVolumes(panelState) {
   }
 }
 
-async function ensurePanelAudioSources(panelState) {
-  await ensureAudioContext();
-  markPanelLoadStarted(panelState);
+async function loadTrackAudio(row, panelState) {
+  const { audio } = row;
 
-  const requests = [...panelState.rowMap.values()].map(async (row) => {
-    if (row.audio.buffer) {
-      row.audio.missing = false;
-      return;
-    }
-    if (row.audio.loadPromise) {
-      await row.audio.loadPromise;
-      return;
-    }
+  if (audio.buffer) {
+    audio.missing = false;
+    return;
+  }
 
-    const path = await resolveTrackPath(panelState.act, row.part);
-    if (path) {
-      row.audio.path = path;
-      const loadPromise = fetch(path)
-        .then((response) => response.arrayBuffer())
-        .then((arrayBuffer) => decodeAudioBuffer(arrayBuffer))
-        .then((buffer) => {
-          row.audio.buffer = buffer;
-          row.audio.missing = false;
-          setTrackOffset(row.audio, row.audio.offset ?? 0);
-          updatePanelLoadUI(panelState);
-          return buffer;
-        });
-      row.audio.loadPromise = loadPromise.catch((error) => {
-        row.audio.loadPromise = null;
-        row.audio.missing = true;
+  if (audio.loadPromise) {
+    await audio.loadPromise;
+    return;
+  }
+
+  audio.loadPromise = (async () => {
+    if (!audio.path && !audio.missing) {
+      const path = await resolveTrackPath(panelState.act, row.part);
+      if (!path) {
+        audio.missing = true;
         updatePanelLoadUI(panelState);
         return null;
-      });
-      await row.audio.loadPromise;
-    } else {
-      row.audio.missing = true;
-      updatePanelLoadUI(panelState);
-    }
-  });
+      }
 
+      audio.path = path;
+    }
+
+    if (audio.missing) {
+      return null;
+    }
+
+    try {
+      if (!audio.arrayBuffer) {
+        audio.arrayBuffer = await fetchTrackArrayBuffer(audio.path);
+        updatePanelLoadUI(panelState);
+      }
+
+      const buffer = await decodeTrackArrayBuffer(audio.arrayBuffer);
+      audio.arrayBuffer = null;
+      audio.buffer = buffer;
+      audio.missing = false;
+      setTrackOffset(audio, audio.offset ?? 0);
+      updatePanelLoadUI(panelState);
+      return buffer;
+    } catch (error) {
+      if (audio.arrayBuffer && !audioUnlocked) {
+        audio.loadPromise = null;
+        updatePanelLoadUI(panelState);
+        return null;
+      }
+
+      audio.loadPromise = null;
+      audio.missing = true;
+      updatePanelLoadUI(panelState);
+      return null;
+    }
+  })();
+
+  await audio.loadPromise;
+}
+
+async function ensurePanelAudioSources(panelState) {
+  markPanelLoadStarted(panelState);
+
+  const requests = [...panelState.rowMap.values()].map((row) => loadTrackAudio(row, panelState));
   await Promise.all(requests);
   markPanelLoadFinished(panelState);
 }
 
+let actPreloadPromise = null;
+
+async function preloadActsInOrder() {
+  for (const act of ACTS) {
+    const panelState = panelStates.get(act);
+    if (panelState) {
+      await ensurePanelAudioSources(panelState);
+    }
+  }
+}
+
+function startActPreload() {
+  if (!actPreloadPromise) {
+    actPreloadPromise = preloadActsInOrder();
+  }
+
+  return actPreloadPromise;
+}
+
 async function restartPanelPlayback(panelState, targetTime) {
-  await ensureAudioContext();
+  await unlockAudioContext();
   await ensurePanelAudioSources(panelState);
 
   const startTime = audioContext.currentTime + 0.1;
@@ -730,6 +878,7 @@ function createPanel(act) {
       part,
       volumeControl: volume,
       buffer: null,
+      arrayBuffer: null,
       loadPromise: null,
       path: "",
       offset: 0,
@@ -844,6 +993,7 @@ function createPanel(act) {
 
   playButton.addEventListener("click", async () => {
     if (!panelState.isPlaying) {
+      await unlockAudioContext();
       await playPanel(panelState);
     } else {
       pausePanelAudio(panelState);
@@ -873,9 +1023,12 @@ for (const button of tabButtons) {
 }
 
 updateSingIndicator();
+setupAudioUnlock();
+
+if (!isIOS) {
+  markAudioUnlocked();
+}
 
 window.setTimeout(() => {
-  for (const panelState of panelStates.values()) {
-    void ensurePanelAudioSources(panelState);
-  }
+  void startActPreload();
 }, 0);
