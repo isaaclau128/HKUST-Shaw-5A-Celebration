@@ -289,7 +289,7 @@ async function resolveTrackPath(act, part) {
   return { path: "", transient: sawTransientError };
 }
 
-async function playSilentUnlockBuffer(context) {
+function playSilentUnlockBuffer(context) {
   try {
     const buffer = context.createBuffer(1, 1, context.sampleRate);
     const source = context.createBufferSource();
@@ -301,40 +301,61 @@ async function playSilentUnlockBuffer(context) {
   }
 }
 
-async function ensureAudioContext() {
+function ensureAudioContext() {
   if (!audioContext) {
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
     audioContext = new AudioContextConstructor();
+    audioContext.addEventListener("statechange", () => {
+      if (audioContext && audioContext.state === "running") {
+        markAudioUnlocked();
+      }
+    });
   }
 
   return audioContext;
 }
 
-async function unlockAudioContext() {
-  const context = await ensureAudioContext();
+function resumeAudioContextSync() {
+  const context = ensureAudioContext();
 
   if (context.state === "suspended" || context.state === "interrupted") {
-    try {
-      await context.resume();
-    } catch {
-      return context;
-    }
+    context.resume().catch(() => {});
+  }
+
+  if (isIOS && !silentUnlockDone) {
+    silentUnlockDone = true;
+    // iOS Safari can report the context as "running" right after resume()
+    // while still withholding real audible output until a buffer source
+    // has actually been started once inside a user gesture. Starting an
+    // inaudible one-sample buffer synchronously inside the same gesture
+    // satisfies that requirement so real playback later is reliably audible.
+    playSilentUnlockBuffer(context);
   }
 
   if (context.state === "running") {
-    if (isIOS && !silentUnlockDone) {
-      silentUnlockDone = true;
-      // iOS Safari can report the context as "running" right after resume()
-      // while still withholding real audible output until a buffer source
-      // has actually been started once inside a user gesture. This app's
-      // real tracks get scheduled slightly after the gesture (fetch/decode
-      // needs to finish first), which is late enough for iOS to stay silent
-      // with no error at all. Starting an inaudible one-sample buffer here,
-      // synchronously off the same unlock path, satisfies that requirement
-      // so the real playback later on is reliably audible.
-      await playSilentUnlockBuffer(context);
-    }
     markAudioUnlocked();
+  }
+
+  return context;
+}
+
+async function unlockAudioContext() {
+  const context = resumeAudioContextSync();
+
+  if (audioUnlocked) {
+    return context;
+  }
+
+  if (context.state !== "running") {
+    try {
+      await context.resume();
+    } catch {
+      // Ignore browsers that refuse to resume without a trusted gesture.
+    }
+  }
+
+  if (audioContext && audioContext.state !== "running") {
+    await audioUnlockPromise;
   }
 
   return context;
@@ -354,12 +375,17 @@ function markAudioUnlocked() {
 
 function setupAudioUnlock() {
   const tryUnlock = () => {
-    void unlockAudioContext();
+    resumeAudioContextSync();
   };
 
-  document.addEventListener("touchstart", tryUnlock, { passive: true });
-  document.addEventListener("touchend", tryUnlock, { passive: true });
-  document.addEventListener("click", tryUnlock);
+  // Use the capture phase and pointer/touch events so the AudioContext is
+  // resumed synchronously inside the first user gesture, before any button
+  // click handlers run. iOS Safari is strict about resume() being called
+  // directly within the gesture, not after an async boundary.
+  document.addEventListener("touchstart", tryUnlock, { passive: true, capture: true });
+  document.addEventListener("touchend", tryUnlock, { passive: true, capture: true });
+  document.addEventListener("pointerdown", tryUnlock, { passive: true, capture: true });
+  document.addEventListener("click", tryUnlock, { capture: true });
 
   // iOS suspends the AudioContext when Safari backgrounds the tab (app
   // switch, screen lock, etc). Re-resume as soon as the page is visible
