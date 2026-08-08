@@ -292,13 +292,26 @@ async function resolveTrackPath(act, part) {
 
 function playSilentUnlockBuffer(context) {
   try {
-    const buffer = context.createBuffer(1, 1, context.sampleRate);
-    const source = context.createBufferSource();
-    source.buffer = buffer;
-    source.connect(context.destination);
-    source.start(0);
+    // Use a short burst of silence. A single sample can be optimized away by
+    // some browsers, and an oscillator at zero gain is harder to ignore.
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    gain.gain.value = 0;
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(context.currentTime);
+    oscillator.stop(context.currentTime + 0.001);
   } catch {
-    // Best-effort nudge only — if it fails for any reason we just skip it.
+    // Fall back to a one-sample buffer if the oscillator path fails.
+    try {
+      const buffer = context.createBuffer(1, context.sampleRate, context.sampleRate);
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(context.destination);
+      source.start(0);
+    } catch {
+      // Best-effort nudge only.
+    }
   }
 }
 
@@ -1192,7 +1205,10 @@ function createPanel(act) {
 
   playButton.addEventListener("click", async () => {
     if (!panelState.isPlaying) {
-      await unlockAudioContext();
+      // Resume and start a silent source synchronously inside the tap.
+      // iOS Safari requires this to happen in the same user gesture as the
+      // touch, not after any await boundary.
+      resumeAudioContextSync();
       await playPanel(panelState);
     } else {
       pausePanelAudio(panelState);
@@ -1200,6 +1216,11 @@ function createPanel(act) {
       updateSingIndicator();
     }
   });
+
+  // Ensure the context is also unlocked on the touch events that precede the
+  // click on mobile browsers.
+  playButton.addEventListener("touchstart", () => resumeAudioContextSync(), { passive: true });
+  playButton.addEventListener("touchend", () => resumeAudioContextSync(), { passive: true });
 
   loadStatus.addEventListener("click", () => {
     const { missing, pending } = getPanelLoadStats(panelState);
@@ -1231,7 +1252,12 @@ for (const button of tabButtons) {
 updateSingIndicator();
 setupAudioUnlock();
 
-if (!isIOS) {
+// On desktop/non-gesture browsers the context starts runnable; unlock
+// immediately so preloading can decode. On mobile we wait for the first
+// gesture, but some Android Chrome instances also report running without a
+// gesture, so check the state explicitly.
+const initialContext = ensureAudioContext();
+if (!isIOS || initialContext.state === "running") {
   markAudioUnlocked();
 }
 
