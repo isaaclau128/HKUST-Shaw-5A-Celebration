@@ -2,7 +2,7 @@
 
 A mobile-friendly singing practice page with 3 tabs (Act 1/2/3), per-part toggles, and per-part volume controls.
 
-## Run locally
+## Run locally 
 
 ```bash
 npm start
