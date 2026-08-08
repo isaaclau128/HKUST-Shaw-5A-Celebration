@@ -348,6 +348,95 @@ function formatTime(seconds) {
   return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
+function formatSecondsApprox(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 1) {
+    return "<1s";
+  }
+
+  if (seconds < 60) {
+    return `${Math.max(1, Math.round(seconds))}s`;
+  }
+
+  const rounded = Math.round(seconds / 5) * 5;
+  const minutes = Math.floor(rounded / 60);
+  const remainder = rounded % 60;
+  if (minutes === 0) {
+    return `${remainder}s`;
+  }
+
+  if (remainder === 0) {
+    return `${minutes}m`;
+  }
+
+  return `${minutes}m ${remainder}s`;
+}
+
+function getPanelLoadStats(panelState) {
+  const total = panelState.rowMap.size;
+  let ready = 0;
+  let missing = 0;
+
+  for (const row of panelState.rowMap.values()) {
+    if (row.audio.buffer) {
+      ready += 1;
+      continue;
+    }
+
+    if (row.audio.missing) {
+      missing += 1;
+    }
+  }
+
+  const pending = Math.max(0, total - ready - missing);
+  return { total, ready, missing, pending };
+}
+
+function updatePanelLoadUI(panelState) {
+  const { total, ready, missing, pending } = getPanelLoadStats(panelState);
+  const resolved = ready + missing;
+  const progress = total > 0 ? Math.min(100, Math.max(0, (resolved / total) * 100)) : 100;
+
+  panelState.loadProgressFill.style.width = `${progress}%`;
+
+  let statusText;
+  if (total === 0) {
+    statusText = "No tracks";
+  } else if (pending > 0) {
+    if (ready === 0) {
+      statusText = `Loading ${resolved}/${total} tracks`;
+    } else {
+      const elapsedMs = Number.isFinite(panelState.loadStartedAt) ? performance.now() - panelState.loadStartedAt : 0;
+      const averageMsPerResolved = resolved > 0 ? elapsedMs / resolved : 0;
+      const remainingMs = averageMsPerResolved > 0 ? averageMsPerResolved * pending : 0;
+      const estimate = remainingMs > 0 ? `about ${formatSecondsApprox(remainingMs / 1000)} left` : "loading…";
+      statusText = `${ready}/${total} ready, ${pending} loading, ${estimate}`;
+    }
+  } else if (missing > 0 && ready === 0) {
+    statusText = `No audio files found for ${missing} tracks`;
+  } else if (missing > 0) {
+    statusText = `${ready}/${total} tracks loaded, ${missing} missing`;
+  } else {
+    statusText = `Audio ready for ${total} tracks`;
+  }
+
+  panelState.loadStatusText.textContent = statusText;
+  panelState.loadStatusLabel.textContent = pending > 0 ? "Audio loading" : "Audio ready";
+}
+
+function markPanelLoadStarted(panelState) {
+  if (!Number.isFinite(panelState.loadStartedAt)) {
+    panelState.loadStartedAt = performance.now();
+  }
+
+  panelState.isPreloading = true;
+  updatePanelLoadUI(panelState);
+}
+
+function markPanelLoadFinished(panelState) {
+  panelState.isPreloading = false;
+  updatePanelLoadUI(panelState);
+}
+
 function getReferenceRow(panelState) {
   return panelState.rowMap.get(getReferencePartLabel(panelState.act)) ?? [...panelState.rowMap.values()][0] ?? null;
 }
@@ -509,9 +598,11 @@ function syncVoiceVolumes(panelState) {
 
 async function ensurePanelAudioSources(panelState) {
   await ensureAudioContext();
+  markPanelLoadStarted(panelState);
 
   const requests = [...panelState.rowMap.values()].map(async (row) => {
     if (row.audio.buffer) {
+      row.audio.missing = false;
       return;
     }
     if (row.audio.loadPromise) {
@@ -527,18 +618,26 @@ async function ensurePanelAudioSources(panelState) {
         .then((arrayBuffer) => decodeAudioBuffer(arrayBuffer))
         .then((buffer) => {
           row.audio.buffer = buffer;
+          row.audio.missing = false;
           setTrackOffset(row.audio, row.audio.offset ?? 0);
+          updatePanelLoadUI(panelState);
           return buffer;
         });
       row.audio.loadPromise = loadPromise.catch((error) => {
         row.audio.loadPromise = null;
+        row.audio.missing = true;
+        updatePanelLoadUI(panelState);
         return null;
       });
       await row.audio.loadPromise;
+    } else {
+      row.audio.missing = true;
+      updatePanelLoadUI(panelState);
     }
   });
 
   await Promise.all(requests);
+  markPanelLoadFinished(panelState);
 }
 
 async function restartPanelPlayback(panelState, targetTime) {
@@ -603,6 +702,10 @@ function createPanel(act) {
 
   const voiceSelect = panelContainer.querySelector(".voice-select");
   const playButton = panelContainer.querySelector(".play-toggle");
+  const loadStatus = panelContainer.querySelector(".load-status");
+  const loadStatusLabel = panelContainer.querySelector(".load-status-label");
+  const loadStatusText = panelContainer.querySelector(".load-status-text");
+  const loadProgressFill = panelContainer.querySelector(".load-progress-fill");
   const partsList = panelContainer.querySelector(".parts-list");
   const indicator = panelContainer.querySelector(".sing-indicator");
   const timelineSlider = panelContainer.querySelector(".timeline-slider");
@@ -639,6 +742,7 @@ function createPanel(act) {
       playbackToken: 0,
       isPlaying: false,
       gainValue: 1,
+      missing: false,
     };
 
     name.textContent = part.label;
@@ -692,6 +796,10 @@ function createPanel(act) {
     act,
     voiceSelect,
     playButton,
+    loadStatus,
+    loadStatusLabel,
+    loadStatusText,
+    loadProgressFill,
     indicator,
     timelineSlider,
     timelineTime,
@@ -699,6 +807,8 @@ function createPanel(act) {
     isPlaying: false,
     indicatorIsSinging: false,
     restIndicatorTimeoutId: null,
+    isPreloading: false,
+    loadStartedAt: Number.NaN,
   };
 
   timelineSlider.addEventListener("input", async () => {
@@ -747,6 +857,7 @@ function createPanel(act) {
   panelStates.set(act, panelState);
 
   syncVoiceVolumes(panelState);
+  updatePanelLoadUI(panelState);
 }
 
 for (const act of ACTS) {
@@ -764,3 +875,9 @@ for (const button of tabButtons) {
 }
 
 updateSingIndicator();
+
+window.setTimeout(() => {
+  for (const panelState of panelStates.values()) {
+    void ensurePanelAudioSources(panelState);
+  }
+}, 0);
