@@ -167,14 +167,32 @@ async function resolveTrackPath(act, part) {
   return "";
 }
 
-function ensureAudioContext() {
+async function ensureAudioContext() {
   if (!audioContext) {
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
     audioContext = new AudioContextConstructor();
   }
   if (audioContext.state === "suspended") {
-    audioContext.resume().catch(() => {});
+    try {
+      await audioContext.resume();
+    } catch {
+      // Ignore browsers that refuse to resume without a trusted gesture.
+    }
   }
+
+  return audioContext;
+}
+
+async function decodeAudioBuffer(arrayBuffer) {
+  await ensureAudioContext();
+
+  if (audioContext.decodeAudioData.length >= 2) {
+    return new Promise((resolve, reject) => {
+      audioContext.decodeAudioData(arrayBuffer, resolve, reject);
+    });
+  }
+
+  return audioContext.decodeAudioData(arrayBuffer);
 }
 
 function ensureTrackGraph(trackState) {
@@ -394,7 +412,11 @@ function updateSingIndicator() {
 
   updateTimelineUI(activeState);
 
-  animationFrameId = requestAnimationFrame(updateSingIndicator);
+  if (activeState.isPlaying) {
+    animationFrameId = requestAnimationFrame(updateSingIndicator);
+  } else {
+    stopIndicatorLoop();
+  }
 }
 
 function stopIndicatorLoop() {
@@ -449,7 +471,7 @@ function syncVoiceVolumes(panelState) {
 }
 
 async function ensurePanelAudioSources(panelState) {
-  ensureAudioContext();
+  await ensureAudioContext();
 
   const requests = [...panelState.rowMap.values()].map(async (row) => {
     if (row.audio.buffer) {
@@ -465,7 +487,7 @@ async function ensurePanelAudioSources(panelState) {
       row.audio.path = path;
       const loadPromise = fetch(path)
         .then((response) => response.arrayBuffer())
-        .then((arrayBuffer) => audioContext.decodeAudioData(arrayBuffer))
+        .then((arrayBuffer) => decodeAudioBuffer(arrayBuffer))
         .then((buffer) => {
           row.audio.buffer = buffer;
           setTrackOffset(row.audio, row.audio.offset ?? 0);
@@ -483,7 +505,7 @@ async function ensurePanelAudioSources(panelState) {
 }
 
 async function restartPanelPlayback(panelState, targetTime) {
-  ensureAudioContext();
+  await ensureAudioContext();
   await ensurePanelAudioSources(panelState);
 
   const startTime = audioContext.currentTime + 0.1;
