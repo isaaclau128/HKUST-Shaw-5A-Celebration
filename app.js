@@ -101,7 +101,6 @@ const ACT_DETAILS = {
     ],
   },
 };
-const PARTS = ACT_DETAILS.act2.parts;
 
 const FILE_EXTENSIONS = ["mp3", "wav", "ogg", "m4a"];
 const REST_INDICATOR_DELAY_MS = 200;
@@ -183,7 +182,7 @@ function normalizeNameOptions(name) {
 }
 
 function getActParts(act) {
-  return ACT_DETAILS[act]?.parts ?? PARTS;
+  return ACT_DETAILS[act]?.parts ?? [];
 }
 
 function getSingingParts(act) {
@@ -211,10 +210,9 @@ function getSongShortcuts(act) {
   return ACT_DETAILS[act]?.songShortcuts ?? [];
 }
 
-// Only used for parts that don't already have an explicit fileName (Act 3,
-// which isn't wired to real files yet). Parts with a fileName have one
-// deterministic path and skip this candidate matrix entirely — see
-// resolveTrackPath below.
+// Only used for parts that don't already have an explicit fileName. Parts
+// with a fileName have one deterministic path and skip this candidate
+// matrix entirely — see resolveTrackPath below.
 function buildTrackCandidates(act, part) {
   const actNames = normalizeNameOptions(act);
   const groupNames = normalizeNameOptions(part.group);
